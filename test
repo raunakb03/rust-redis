@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+
+# All stage slugs loaded directly from course-definition.yml
+ALL_STAGES=(jm1 rg2)
+
+# Number of stages to run (default to 1)
+N=${1:-1}
+
+# Validate input is a number
+if ! [[ "$N" =~ ^[0-9]+$ ]]; then
+    echo "Error: Please provide a valid stage number (e.g., ./test 3)"
+    exit 1
+fi
+
+# Cap N at the max number of stages available
+if [ "$N" -gt "${#ALL_STAGES[@]}" ]; then
+    echo "Warning: Only ${#ALL_STAGES[@]} stages exist. Running all of them."
+    N="${#ALL_STAGES[@]}"
+fi
+
+# Build the JSON array dynamically for stages 1 to N
+JSON="["
+for (( i=0; i<N; i++ )); do
+    STAGE="${ALL_STAGES[$i]}"
+    JSON+="{\"slug\": \"$STAGE\", \"tester_log_prefix\": \"$STAGE\", \"title\": \"$STAGE\"}"
+    
+    # Add a comma if it's not the last element
+    if [ $i -lt $((N - 1)) ]; then
+        JSON+=","
+    fi
+done
+JSON+="]"
+
+export CODECRAFTERS_REPOSITORY_DIR="$(pwd)"
+export CODECRAFTERS_SUBMISSION_DIR="$(pwd)"
+export CODECRAFTERS_TEST_CASES_JSON="$JSON"
+
+# Execute the tester (change to redis-tester, git-tester, etc., for other courses)
+redis-tester
