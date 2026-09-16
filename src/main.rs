@@ -1,8 +1,15 @@
 use std::{error::Error};
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}};
+use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}};
 
 async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn Error>>{
-    stream.write_all("+PONG\r\n".as_bytes()).await?;
+    let mut buf   = [0; 1024];
+    loop {
+        let bytes_read = stream.read(&mut buf).await.unwrap();
+        if bytes_read == 0 {
+            break;
+        }
+        stream.write_all("+PONG\r\n".as_bytes()).await?;
+    }
     Ok(())
 }
 

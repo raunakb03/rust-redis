@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # All stage slugs loaded directly from course-definition.yml
-ALL_STAGES=(jm1 rg2)
+ALL_STAGES=(jm1 rg2 wy1 zu2)
 
 # Number of stages to run (default to 1)
 N=${1:-1}
