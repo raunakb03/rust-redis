@@ -1,10 +1,12 @@
-use std::{error::Error};
+use std::{error::Error, sync::{Arc, Mutex}};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}};
 
 mod parser;
 mod executor;
+#[allow(non_snake_case)]
+mod dataManager;
 
-async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn Error>>{
+async fn handle_connection(mut stream: TcpStream, mut db: Arc<Mutex<dataManager::DataManager>>) -> Result<(), Box<dyn Error>>{
     let mut buf = [0; 1024];
     loop {
         let bytes_read = stream.read(&mut buf).await?;
@@ -14,7 +16,7 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn Error>>{
         let mut res = String::from("+PONG\r\n");
         if bytes_read > 0 && let Some((parsed_req, _)) = parser::parse(0, bytes_read - 1, &buf[0..bytes_read]) {
             println!("Parsed request: {:?}", parsed_req);
-            res = executor::execute(parsed_req);
+            res = executor::execute(parsed_req, &mut db);
         }
         stream.write_all(res.as_bytes()).await?;
     }
@@ -25,10 +27,13 @@ async fn handle_connection(mut stream: TcpStream) -> Result<(), Box<dyn Error>>{
 async fn main() -> std::io::Result<()> {
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
+    let db = Arc::new(Mutex::new(dataManager::DataManager::new()));
+
     loop {
         let (socket, _) = listener.accept().await?;
+        let mut db_clone = Arc::clone(&db);
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(socket).await {
+            if let Err(e) = handle_connection(socket, db_clone).await {
                 eprintln!("Error reading from client: {}", e);
             }
         });
