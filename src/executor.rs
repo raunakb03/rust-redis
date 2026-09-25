@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
 use crate::parser::RedisRes;
-use crate::dataManager;
+use crate::data_manager;
 
 #[allow(clippy::collapsible_if)]
-pub fn execute(req: RedisRes, db: &mut Arc<Mutex<dataManager::DataManager>>) -> String {
+pub fn execute(req: RedisRes, db: &Arc<Mutex<data_manager::DataManager>>) -> String {
     if let RedisRes::Array(items) = req {
         if let Some(RedisRes::BulkString(_, command_name)) = items.first() {
             match command_name.to_uppercase().as_str() {
