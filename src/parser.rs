@@ -1,64 +1,95 @@
 #[derive(Debug)]
-pub enum RedisRes {
-    String(usize, String),
-    BulkString(usize, String),
-    Array(Vec<RedisRes>),
-    None,
+pub enum RespValue {
+    SimpleString(String),
+    Error(String),
+    Integer(i64),
+    BulkString(String),
+    Array(Vec<RespValue>),
+    Null,
+    NullArray,
 }
 
-fn convert_byte_to_int(byte: u8) -> u32 {
-    byte as u32 - '0' as u32
+#[derive(Debug)]
+pub enum ParserError {
+    Incomplete,
+    Invalid(String),
 }
 
-pub fn parse(mut start: usize, end: usize, input: &[u8]) -> Option<(RedisRes, usize)> {
-    if start > end {
-        return None;
-    }
-    match input[start] {
+fn parse_int(bytes: &[u8]) -> Result<i64, ParserError> {
+    str::from_utf8(bytes)
+        .ok()
+        .and_then(|st| st.parse().ok())
+        .ok_or_else(|| {
+            ParserError::Invalid(format!(
+                "invalid integer: {}",
+                String::from_utf8_lossy(bytes)
+            ))
+        })
+}
+
+// Redis rejects bulk strings larger than 512 MB.
+const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
+
+pub fn parse(input: &[u8]) -> Result<(RespValue, usize), ParserError> {
+    let Some(line_end) = input.windows(2).position(|w| w == b"\r\n") else {
+        return Err(ParserError::Incomplete);
+    };
+    match input[0] {
         b'*' => {
-            let mut num_eles = 0;
-            start += 1;
-            while input[start] != b'\r' {
-                num_eles = num_eles*10 + convert_byte_to_int(input[start]);
-                start += 1;
+            let num_eles = parse_int(&input[1..line_end])?;
+            let mut pos = line_end + 2;
+            if num_eles == -1 {
+                return Ok((RespValue::NullArray, pos));
             }
-            start += 2;
+            if num_eles < -1 {
+                return Err(ParserError::Invalid(format!(
+                    "invalid array length: {num_eles}"
+                )));
+            }
             let mut array_items = Vec::new();
             for _ in 0..num_eles {
-                if let Some((parsed_item, new_start)) = parse(start, end, input) {
-                    array_items.push(parsed_item);
-                    start = new_start;
-                }
+                let (parsed_item, bytes_consumed) = parse(&input[pos..])?;
+                array_items.push(parsed_item);
+                pos += bytes_consumed;
             }
-            Some((RedisRes::Array(array_items), start))
-        },
+            Ok((RespValue::Array(array_items), pos))
+        }
         b'$' => {
-            let mut len = 0;
-            start += 1;
-            while input[start] != b'\r' {
-                len = len*10 + convert_byte_to_int(input[start]);
-                start += 1;
+            let len = parse_int(&input[1..line_end])?;
+            let pos = line_end + 2;
+            if len == -1 {
+                return Ok((RespValue::Null, pos));
             }
-            start += 2;
-            let string_bytes = &input[start..start + len as usize];
-            let st = String::from_utf8_lossy(string_bytes).to_string();
-            start = start + len as usize + 2;
-            Some((RedisRes::BulkString(len as usize, st), start))
-        },
+            if !(0..=MAX_BULK_LEN).contains(&len) {
+                return Err(ParserError::Invalid(format!(
+                    "invalid bulk string length: {len}"
+                )));
+            }
+            let len = len as usize;
+            let end = pos + len;
+            if input.len() < end + 2 {
+                return Err(ParserError::Incomplete);
+            }
+            if &input[end..end + 2] != b"\r\n" {
+                return Err(ParserError::Invalid(format!(
+                    "expected CRLF after bulk string, got {:?}",
+                    String::from_utf8_lossy(&input[end..end + 2])
+                )));
+            }
+            let st = String::from_utf8_lossy(&input[pos..end]).into_owned();
+            Ok((RespValue::BulkString(st), end + 2))
+        }
         b':' => {
-            todo!()
-        },
+            let val = parse_int(&input[1..line_end])?;
+            Ok((RespValue::Integer(val), line_end + 2))
+        }
         b'+' => {
-            todo!()
-        },
-        _ => {
-            let mut s = String::new();
-            while input[start] != b'\r' {
-                s.push(input[start] as char);
-                start += 1;
-            }
-            start += 2;
-            Some((RedisRes::String(s.len(), s), start))
-        },
+            let res = String::from_utf8_lossy(&input[1..line_end]).into_owned();
+            Ok((RespValue::SimpleString(res), line_end + 2))
+        }
+        _ => Err(ParserError::Invalid(format!(
+            "unexpected type byte: {:?}",
+            input[0] as char
+        ))),
     }
 }

@@ -4,7 +4,7 @@ This file tracks known bugs, correctness gaps, and code-quality improvements for
 Redis implementation (CodeCrafters "Build your own Redis" in Rust). It is the shared
 channel between the project owner and any AI assistant reviewing the code.
 
-**Last reviewed:** 2026-09-28 (at commit `78b4ffa`, stages passed: up to *Expiry*)
+**Last reviewed:** 2026-09-29 (commit `78b4ffa` + uncommitted parser rewrite; stages passed at last commit: up to *Expiry*)
 
 ---
 
@@ -35,12 +35,11 @@ If you are an AI analyzing or modifying this codebase, you **must** keep this fi
 
 ## Summary
 
-The core problem is the **parser**: it assumes every socket read contains complete, well-formed
-commands. When that isn't true it panics instead of returning an error. Fixing BUG-001 and
-BUG-004 through BUG-008 together (a `Result`-returning parser, a persistent read buffer, and
-byte-based values) resolves most of the High-severity items.
+The parser has been rewritten (see **Resolved**): it returns `Result`, reports `Incomplete` for
+partial input, and no longer panics on the tested edge cases. `main.rs` and `executor.rs` still
+use the old API, so the project does not build yet.
 
-Suggested order: BUG-001 → BUG-004 → BUG-008 → the rest.
+Next: update `main.rs`/`executor.rs` → BUG-001 (persistent read buffer) → BUG-008 (bytes) → the rest.
 
 ---
 
@@ -66,49 +65,6 @@ Suggested order: BUG-001 → BUG-004 → BUG-008 → the rest.
   loop already prevents. Malformed input panics instead of reaching this branch.
 - **Suggested fix:** Resolves naturally once the parser returns a proper `Result` (BUG-004).
 
-### BUG-003: Redundant `end` parameter on `parse`
-- **Status:** Open
-- **Severity:** Low
-- **Location:** `src/main.rs` call site, `src/parser.rs` `parse` signature
-- **Problem:** `bytes_read - 1` is passed alongside `&buf[..bytes_read]`. It duplicates
-  `input.len()` and is an off-by-one hazard.
-- **Suggested fix:** Drop `end` and use `input.len()` (or parse from a slice/cursor).
-
-### BUG-004: Parser has no bounds checks and panics on short input
-- **Status:** Open
-- **Severity:** High
-- **Location:** `src/parser.rs` — `parse` (`while input[start] != b'\r'`, `&input[start..start + len]`)
-- **Problem:** Indexing assumes data is complete, so truncated input panics.
-- **Suggested fix:** Return `Result<(Frame, usize), ParseError>` with
-  `enum ParseError { Incomplete, Invalid(String) }` (`thiserror` is already a dependency).
-  Check bounds before every access.
-
-### BUG-005: `convert_byte_to_int` doesn't validate digits and overflows
-- **Status:** Open
-- **Severity:** High
-- **Location:** `src/parser.rs` — `convert_byte_to_int`
-- **Problem:** A `-` or other non-digit underflows (panics in debug, silently wrong in release).
-  Large lengths overflow `u32`. Negative lengths (`$-1` null bulk string, `*-1` null array)
-  aren't supported.
-- **Repro (verified):** `*2\r\n$4\r\nECHO\r\n$-1\r\n` panics with subtraction overflow.
-- **Suggested fix:** Find the line end, then `std::str::from_utf8(line)?.parse::<i64>()`.
-  Handle `-1` explicitly.
-
-### BUG-006: Array parsing silently drops elements that fail to parse
-- **Status:** Open
-- **Severity:** Medium
-- **Location:** `src/parser.rs` — `b'*'` branch, `for _ in 0..num_eles` loop
-- **Problem:** If an element returns `None`, the loop continues and returns a shorter array as if
-  nothing went wrong.
-- **Suggested fix:** Propagate the error (`?`) instead of skipping.
-
-### BUG-007: Trailing `\r\n` is never verified
-- **Status:** Open
-- **Severity:** Low
-- **Location:** `src/parser.rs` — every `start += 2`
-- **Problem:** The code skips two bytes without checking that they are `\r\n`.
-- **Suggested fix:** Verify `&input[i..i + 2] == b"\r\n"` or return `ParseError::Invalid`.
-
 ### BUG-008: `from_utf8_lossy` corrupts binary data and breaks ECHO framing
 - **Status:** Open
 - **Severity:** High
@@ -117,20 +73,6 @@ Suggested order: BUG-001 → BUG-004 → BUG-008 → the rest.
   but `ECHO` still writes the original length, so the reply's framing is broken.
 - **Repro (verified):** ECHO `\xff\xfe` (2 bytes) replies `$2\r\n` followed by 6 bytes.
 - **Suggested fix:** Store bulk strings and values as `Vec<u8>` / `Bytes`, not `String`.
-
-### BUG-009: Fallback (inline) branch decodes bytes as Latin-1
-- **Status:** Open
-- **Severity:** Low
-- **Location:** `src/parser.rs` — `_` branch (`input[start] as char`)
-- **Problem:** Non-ASCII text comes out garbled.
-- **Suggested fix:** Work with bytes, or decode the whole line with `from_utf8`.
-
-### BUG-010: `todo!()` for `:` and `+` lets clients crash the connection
-- **Status:** Open
-- **Severity:** High
-- **Location:** `src/parser.rs` — `b':'` and `b'+'` branches
-- **Repro (verified):** Sending `+PING\r\n` panics.
-- **Suggested fix:** Implement them, or return `ParseError::Invalid`. Client input must never panic.
 
 ### BUG-011: Invalid or unsupported `SET` options are silently ignored
 - **Status:** Open
@@ -165,28 +107,44 @@ Suggested order: BUG-001 → BUG-004 → BUG-008 → the rest.
 - **Suggested fix:** Add a periodic background task that samples keys and deletes expired ones,
   like Redis does.
 
+### BUG-015: Replication RDB transfer has no trailing CRLF
+- **Status:** Open
+- **Severity:** Medium (only matters once the replication extension starts)
+- **Location:** `src/parser.rs` — `b'$'` branch
+- **Problem:** In the replication handshake the master sends the RDB file as
+  `$<len>\r\n<binary contents>` with **no** trailing `\r\n`. The `$` branch requires the CRLF,
+  so it will report this as `Invalid` or `Incomplete`.
+- **Suggested fix:** Add a separate parse path for the RDB payload, used only at that point in the
+  handshake.
+
+### BUG-016: Simple errors (`-`) are not parsed
+- **Status:** Open
+- **Severity:** Low (clients never send errors; matters when acting as a replica)
+- **Location:** `src/parser.rs` — `_` branch
+- **Problem:** `RespValue::Error` exists but the parser never produces it. `-ERR ...` input
+  is rejected as an unexpected type byte.
+- **Suggested fix:** Add a `b'-'` branch mirroring the `b'+'` branch.
+
+### BUG-017: Unlimited nesting depth in the parser
+- **Status:** Open
+- **Severity:** Low
+- **Location:** `src/parser.rs` — recursive call in the `b'*'` branch
+- **Problem:** `*1\r\n*1\r\n...` recurses once per level. Harmless with the fixed 1024-byte buffer,
+  but with a growing buffer (BUG-001) a client could send enough nesting to overflow the stack.
+- **Suggested fix:** Pass a depth counter and return `Invalid` past a limit (e.g. 128).
+
+### BUG-018: Large commands are re-parsed from the start on every read
+- **Status:** Open
+- **Severity:** Low (performance only)
+- **Location:** `src/parser.rs` / `src/main.rs` read loop
+- **Problem:** On `Incomplete`, the next read parses the whole command again from the beginning.
+  Correct, but quadratic for very large payloads arriving in many small pieces.
+- **Suggested fix:** Only worth doing if it shows up in practice, e.g. check a bulk string's
+  declared length against the buffered bytes before re-parsing.
+
 ---
 
 ## Code quality / idiomatic Rust
-
-### QUAL-001: Use `Result` instead of `Option` plus panics in the parser
-- **Status:** Open
-- **Location:** `src/parser.rs`
-- **Note:** See BUG-004. This lets the connection loop tell "wait for more bytes" apart from
-  "send an error".
-
-### QUAL-002: Use slices and std parsing instead of index arithmetic
-- **Status:** Open
-- **Location:** `src/parser.rs`
-- **Note:** `input.windows(2).position(|w| w == b"\r\n")` to find line ends, then
-  `str::parse::<i64>()`. This removes `convert_byte_to_int` entirely.
-
-### QUAL-003: Rename `RedisRes` and remove the redundant length field
-- **Status:** Open
-- **Location:** `src/parser.rs`
-- **Note:** `RedisRes` is used for parsed *requests*. `RespValue` or `Frame` is clearer. The
-  `usize` in `String(usize, String)` / `BulkString(usize, String)` duplicates the string's own
-  length. Clippy reports the `String` variant's fields and the `None` variant as never used.
 
 ### QUAL-004: Encode responses in one place
 - **Status:** Open
@@ -253,7 +211,45 @@ Suggested order: BUG-001 → BUG-004 → BUG-008 → the rest.
 
 ## Resolved
 
-_Nothing yet. Move entries here when they're fixed, marked `Won't fix`, or found `Invalid`._
+### BUG-003: Redundant `end` parameter on `parse`
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** `parse(input: &[u8])` takes only a slice; positions are relative to it. (`main.rs` call site still to be updated.)
+
+### BUG-004: Parser has no bounds checks and panics on short input
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** `parse` returns `Result<(RespValue, usize), ParserError>`; missing CRLF or a short bulk body returns `ParserError::Incomplete` instead of panicking.
+
+### BUG-005: `convert_byte_to_int` doesn't validate digits and overflows
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** `convert_byte_to_int` removed; `parse_int` uses `str::parse::<i64>()`. `$-1` → `Null`, `*-1` → `NullArray`, other negatives → `Invalid`, bulk length capped at 512 MB.
+
+### BUG-006: Array parsing silently drops elements that fail to parse
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** Array elements are parsed with `?`, so any element error propagates.
+
+### BUG-007: Trailing `\r\n` is never verified
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** Header lines end at the found CRLF; the bulk string branch verifies the trailing `\r\n` and returns `Invalid` otherwise.
+
+### BUG-009: Fallback (inline) branch decodes bytes as Latin-1
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** Fallback branch removed; an unknown type byte now returns `Invalid("unexpected type byte: ..")`. Inline commands are not supported (the tester doesn't send them).
+
+### BUG-010: `todo!()` for `:` and `+` lets clients crash the connection
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** `:` parses to `RespValue::Integer` and `+` to `RespValue::SimpleString`; no `todo!()` left.
+
+### QUAL-001: Use `Result` instead of `Option` plus panics in the parser
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** Done together with BUG-004 (`ParserError { Incomplete, Invalid(String) }`).
+
+### QUAL-002: Use slices and std parsing instead of index arithmetic
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** Uses `windows(2).position(..)` to find the line end, a `parse_int` helper and `let ... else`.
+
+### QUAL-003: Rename `RedisRes` and remove the redundant length field
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Fix:** Renamed to `RespValue`; length fields removed; `Null`/`NullArray`/`Integer`/`Error` variants added. (`executor.rs` still to be updated.)
 
 <!--
 Example of a resolved entry:
