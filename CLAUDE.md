@@ -24,6 +24,7 @@ of `README.md` (the stages line and the supported-commands table) in the same ch
 
 - Build: `cargo build`
 - Lint: `cargo clippy --all-targets`
+- Unit tests: `cargo test` (run after every change, along with `./test`)
 - Local stage tests: `./test [N]` (runs the first N stages)
 - Submit: `codecrafters submit`
 - Source layout: `src/main.rs` (TCP server and connection loop), `src/parser.rs` (RESP parser and `RespValue::encode`),

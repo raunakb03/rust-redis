@@ -52,13 +52,8 @@ redis-cli PING             # try it from another terminal
 
 ```sh
 cargo clippy --all-targets # lint
+cargo test                 # unit tests
 ./test [N]                 # run the first N CodeCrafters stages locally
 codecrafters submit        # submit to CodeCrafters; test output streams to your terminal
 ```
 
-## Working with AI assistants
-
-`ISSUES.md` is the shared channel for reviews. An AI assistant working on this repo should
-read it first, add any new issues it finds, and mark issues as fixed when the code resolves
-them. The full rules are at the top of `ISSUES.md`. Claude Code picks this up automatically
-through `CLAUDE.md`.

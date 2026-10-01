@@ -51,3 +51,33 @@ impl DataManager {
         self.data.get(key).map(|res| &res.val)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    #[test]
+    fn get_returns_inserted_value() {
+        let mut db = DataManager::new();
+        db.insert("k".into(), RedisData::new("v".into()));
+        assert_eq!(db.get("k"), Some(&"v".to_string()));
+        assert_eq!(db.get("missing"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_key_is_removed_on_read() {
+        let mut db = DataManager::new();
+        let expiration = Instant::now() + Duration::from_millis(10);
+        db.insert(
+            "k".into(),
+            RedisData::new("v".into()).with_expiration(expiration),
+        );
+        assert!(db.get("k").is_some());
+
+        tokio::time::advance(Duration::from_millis(11)).await;
+        assert_eq!(db.get("k"), None);
+        assert!(!db.data.contains_key("k"));
+    }
+}

@@ -40,7 +40,7 @@ function per command that returns a `RespValue` (see **Resolved**). The project 
 The remaining items are mostly for later extensions or code quality; none are tested by the
 current stages.
 
-Next: commit → QUAL-012 (tests) → BUG-008 (bytes) → the rest.
+Next: commit → BUG-008 (bytes) → the rest. Run `cargo test` and `./test` after every change.
 
 ---
 
@@ -120,12 +120,6 @@ Next: commit → QUAL-012 (tests) → BUG-008 (bytes) → the rest.
 - **Note:** `anyhow`, `thiserror` and `bytes` aren't used yet. Use them (see BUG-001, BUG-004) or
   remove them.
 
-### QUAL-012: No unit tests
-- **Status:** Open
-- **Location:** `src/parser.rs` (highest value)
-- **Note:** The parser is easy to test on its own. Tests for split input, null bulk strings,
-  binary data and malformed lengths would have caught most of the bugs above.
-
 ---
 
 ## What's already good (keep doing this)
@@ -139,6 +133,10 @@ Next: commit → QUAL-012 (tests) → BUG-008 (bytes) → the rest.
 ---
 
 ## Resolved
+
+### QUAL-012: No unit tests
+- **Status:** Fixed (2026-10-01, uncommitted working tree; `cargo test` runs 40 tests, all passing)
+- **Fix:** Unit tests in `parser.rs` (parsing, incomplete/invalid input, `encode`, round trip), `executor.rs` (every command, error replies, expiry with Tokio's paused clock) and `data_manager.rs`. Reintroducing the old `:` off-by-one or `*-1` bug makes tests fail. No end-to-end TCP tests yet (would need a `lib.rs` and a configurable port).
 
 ### BUG-011: Invalid or unsupported `SET` options are silently ignored
 - **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
