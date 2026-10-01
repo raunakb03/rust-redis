@@ -9,6 +9,26 @@ pub enum RespValue {
     NullArray,
 }
 
+impl RespValue {
+    pub fn encode(&self) -> Vec<u8> {
+        match self {
+            RespValue::SimpleString(s) => format!("+{s}\r\n").into_bytes(),
+            RespValue::Error(msg) => format!("-{msg}\r\n").into_bytes(),
+            RespValue::Integer(n) => format!(":{n}\r\n").into_bytes(),
+            RespValue::BulkString(s) => format!("${}\r\n{s}\r\n", s.len()).into_bytes(),
+            RespValue::Array(items) => {
+                let mut out = format!("*{}\r\n", items.len()).into_bytes();
+                for item in items {
+                    out.extend(item.encode());
+                }
+                out
+            }
+            RespValue::Null => b"$-1\r\n".to_vec(),
+            RespValue::NullArray => b"*-1\r\n".to_vec(),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum ParserError {
     Incomplete,
@@ -28,7 +48,7 @@ fn parse_int(bytes: &[u8]) -> Result<i64, ParserError> {
 }
 
 // Redis rejects bulk strings larger than 512 MB.
-const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
+pub const MAX_BULK_LEN: i64 = 512 * 1024 * 1024;
 
 pub fn parse(input: &[u8]) -> Result<(RespValue, usize), ParserError> {
     let Some(line_end) = input.windows(2).position(|w| w == b"\r\n") else {

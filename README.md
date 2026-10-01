@@ -13,28 +13,29 @@ Supported commands:
 
 | Command | Notes |
 |---|---|
-| `PING` | Replies `+PONG` |
+| `PING [message]` | Replies `+PONG`, or the message as a bulk string if one is given |
 | `ECHO <message>` | Replies with the message as a bulk string |
-| `SET <key> <value> [EX seconds \| PX milliseconds]` | Other options (`NX`, `XX`, `GET`, `KEEPTTL`) are not supported yet |
+| `SET <key> <value> [EX seconds \| PX milliseconds]` | Other options (`NX`, `XX`, `GET`, `KEEPTTL`) are not supported yet and return `ERR syntax error` |
 | `GET <key>` | Returns a null bulk string if the key is missing or expired |
 
-Multiple clients are served concurrently, and several complete commands in one read
-(pipelining) are handled.
+Multiple clients are served concurrently. Commands split across several reads and several
+commands sent in one write (pipelining) are both handled. Wrong argument counts and invalid
+`SET` options return Redis-style `-ERR` replies.
 
 ## Known issues
 
 Known bugs and planned improvements are tracked in [`ISSUES.md`](ISSUES.md), each with a
-severity, location and suggested fix. The most important current limitation is that the RESP
-parser assumes every socket read holds complete, well-formed commands. Split or oversized
-commands and some malformed input make the connection panic.
+severity, location and suggested fix. The most important current limitation is that values are
+stored as UTF-8 `String`s, so binary data is corrupted (BUG-008). Expired keys are also only
+removed when they are read.
 
 ## Project layout
 
 ```
 src/
 ├── main.rs          # TCP listener, one Tokio task per connection, read/respond loop
-├── parser.rs        # RESP protocol parser
-├── executor.rs      # Command dispatch (PING, ECHO, SET, GET)
+├── parser.rs        # RESP protocol parser and reply encoder
+├── executor.rs      # Command dispatch, one function per command (PING, ECHO, SET, GET)
 └── data_manager.rs  # In-memory key-value store with expiry checked on read
 ISSUES.md            # Issue tracker shared between the owner and AI assistants
 CLAUDE.md            # Instructions loaded automatically by Claude Code

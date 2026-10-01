@@ -26,5 +26,5 @@ of `README.md` (the stages line and the supported-commands table) in the same ch
 - Lint: `cargo clippy --all-targets`
 - Local stage tests: `./test [N]` (runs the first N stages)
 - Submit: `codecrafters submit`
-- Source layout: `src/main.rs` (TCP server and connection loop), `src/parser.rs` (RESP parser),
+- Source layout: `src/main.rs` (TCP server and connection loop), `src/parser.rs` (RESP parser and `RespValue::encode`),
   `src/executor.rs` (command handling), `src/data_manager.rs` (key-value store with expiry).

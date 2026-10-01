@@ -4,7 +4,7 @@ This file tracks known bugs, correctness gaps, and code-quality improvements for
 Redis implementation (CodeCrafters "Build your own Redis" in Rust). It is the shared
 channel between the project owner and any AI assistant reviewing the code.
 
-**Last reviewed:** 2026-09-29 (commit `78b4ffa` + uncommitted parser rewrite; stages passed at last commit: up to *Expiry*)
+**Last reviewed:** 2026-10-01 (commit `78b4ffa` + uncommitted parser, `main.rs` and `executor.rs` changes; all stages up to *Expiry* pass with `./test`)
 
 ---
 
@@ -35,69 +35,26 @@ If you are an AI analyzing or modifying this codebase, you **must** keep this fi
 
 ## Summary
 
-The parser has been rewritten (see **Resolved**): it returns `Result`, reports `Incomplete` for
-partial input, and no longer panics on the tested edge cases. `main.rs` and `executor.rs` still
-use the old API, so the project does not build yet.
+The parser and the connection loop have been rewritten, and `executor.rs` restructured into one
+function per command that returns a `RespValue` (see **Resolved**). The project builds and all stages up to *Expiry* pass.
+The remaining items are mostly for later extensions or code quality; none are tested by the
+current stages.
 
-Next: update `main.rs`/`executor.rs` → BUG-001 (persistent read buffer) → BUG-008 (bytes) → the rest.
+Next: commit → QUAL-012 (tests) → BUG-008 (bytes) → the rest.
 
 ---
 
 ## Bugs (confirmed or high-confidence)
 
-### BUG-001: No buffering across socket reads
+### BUG-008: `from_utf8_lossy` corrupts binary data
 - **Status:** Open
 - **Severity:** High
-- **Location:** `src/main.rs` — `handle_connection` (fixed `[0; 1024]` buffer)
-- **Problem:** TCP is a byte stream, so one `read` can end mid-command. Leftover partial bytes are
-  thrown away, and any command larger than 1024 bytes can never be parsed.
-- **Repro (verified):** Send `*1\r\n$4\r\nPI` and then `NG\r\n` as two writes. The server panics at
-  `parser.rs` (slice out of bounds) and the connection drops. Same for `SET a <1100-byte value>`.
-- **Suggested fix:** Keep a `BytesMut` per connection (the `bytes` crate is already a dependency).
-  Append each read to it, parse as many complete frames as possible, and keep the remainder for
-  the next read. The parser needs to be able to report "incomplete" (see BUG-004).
-
-### BUG-002: `-ERR invalid request` branch is unreachable
-- **Status:** Open
-- **Severity:** Medium
-- **Location:** `src/main.rs` — `else` branch after `parser::parse` in `handle_connection`
-- **Problem:** `parse` only returns `None` when `start > end`, which the `while start < bytes_read`
-  loop already prevents. Malformed input panics instead of reaching this branch.
-- **Suggested fix:** Resolves naturally once the parser returns a proper `Result` (BUG-004).
-
-### BUG-008: `from_utf8_lossy` corrupts binary data and breaks ECHO framing
-- **Status:** Open
-- **Severity:** High
-- **Location:** `src/parser.rs` — `b'$'` branch; `src/executor.rs` — `ECHO`
+- **Location:** `src/parser.rs` — `b'$'` branch; values stored as `String` in `src/data_manager.rs`
 - **Problem:** Redis strings can hold any bytes. Invalid UTF-8 bytes become U+FFFD (3 bytes each),
-  but `ECHO` still writes the original length, so the reply's framing is broken.
-- **Repro (verified):** ECHO `\xff\xfe` (2 bytes) replies `$2\r\n` followed by 6 bytes.
+  so stored and echoed values are corrupted. (The reply *framing* is now correct:
+  `RespValue::encode` uses the length of the string actually sent.)
+- **Repro:** ECHO `\xff\xfe` (2 bytes) replies with the 6-byte `\xef\xbf\xbd\xef\xbf\xbd`.
 - **Suggested fix:** Store bulk strings and values as `Vec<u8>` / `Bytes`, not `String`.
-
-### BUG-011: Invalid or unsupported `SET` options are silently ignored
-- **Status:** Open
-- **Severity:** Medium
-- **Location:** `src/executor.rs` — `SET` option loop
-- **Problem:** `SET k v EX abc` stores the key with no expiry and replies `+OK` (Redis returns an
-  error). `EX 0` or negative values should be errors. Unknown options (`NX`, `XX`, `GET`,
-  `KEEPTTL`) are skipped silently, and a missing value after `EX`/`PX` is ignored.
-- **Suggested fix:** Return `-ERR syntax error` / `-ERR invalid expire time in 'set' command`
-  as Redis does.
-
-### BUG-012: `secs * 1000` can overflow
-- **Status:** Open
-- **Severity:** Low
-- **Location:** `src/executor.rs` — `"EX"` arm
-- **Problem:** Very large values panic in debug builds.
-- **Suggested fix:** Use `checked_mul`, or build a `Duration::from_secs` directly.
-
-### BUG-013: Missing arguments return the wrong error
-- **Status:** Open
-- **Severity:** Low
-- **Location:** `src/executor.rs` — fall-through to `"-ERR invalid request"`
-- **Problem:** `GET` with no key replies `-ERR invalid request`. Redis replies
-  `-ERR wrong number of arguments for 'get' command`.
-- **Suggested fix:** Check the argument count per command and return the Redis-style error.
 
 ### BUG-014: Expired keys are only removed when someone reads them
 - **Status:** Open
@@ -146,34 +103,6 @@ Next: update `main.rs`/`executor.rs` → BUG-001 (persistent read buffer) → BU
 
 ## Code quality / idiomatic Rust
 
-### QUAL-004: Encode responses in one place
-- **Status:** Open
-- **Location:** `src/executor.rs`
-- **Note:** Each command builds its reply with `format!`. Return a `RespValue` and write one
-  `encode()` / `serialize()` function. That puts the protocol format in one spot and prevents
-  BUG-008-style length mismatches.
-
-### QUAL-005: `is_some()` followed by `unwrap_or(0)`
-- **Status:** Open
-- **Location:** `src/executor.rs` — after the SET option loop
-- **Note:** Use `if let Some(ms) = expiry_ms { ... }`.
-
-### QUAL-006: `#[allow(clippy::collapsible_if)]` hides a lint that could be fixed
-- **Status:** Open
-- **Location:** `src/executor.rs` — above `execute`
-- **Note:** Let-chains are already used (edition 2024), so collapse the nested `if let`s and
-  remove the `allow`.
-
-### QUAL-007: `to_uppercase()` allocates on every command
-- **Status:** Open
-- **Location:** `src/executor.rs`
-- **Note:** Use `eq_ignore_ascii_case` or `to_ascii_uppercase()`. Minor.
-
-### QUAL-008: `execute` will keep growing as commands are added
-- **Status:** Open
-- **Location:** `src/executor.rs`
-- **Note:** Split it into one function per command, e.g. `fn set(args: &[RespValue], db: &Db) -> RespValue`.
-
 ### QUAL-009: Simplify the expiry check in `DataManager::get`
 - **Status:** Open
 - **Location:** `src/data_manager.rs` — `get`
@@ -211,45 +140,89 @@ Next: update `main.rs`/`executor.rs` → BUG-001 (persistent read buffer) → BU
 
 ## Resolved
 
+### BUG-011: Invalid or unsupported `SET` options are silently ignored
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** `set` reads options with an iterator: unknown options → `ERR syntax error`; missing, non-numeric or zero `EX`/`PX` values → `ERR invalid expire time in 'set' command`.
+
+### BUG-012: `secs * 1000` can overflow
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** TTL is stored as a `Duration` (`Duration::from_secs` / `from_millis`), and `Instant::now().checked_add(ttl)` rejects values that would overflow.
+
+### BUG-013: Missing arguments return the wrong error
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** Each command checks its argument count with a slice pattern and returns `ERR wrong number of arguments for '<cmd>' command`.
+
+### BUG-019: `PING <message>` ignores its argument
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** `ping` replies with the message as a bulk string when one argument is given.
+
+### QUAL-004: Encode responses in one place
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** Commands return `RespValue`; `RespValue::encode()` in `parser.rs` produces the RESP bytes, called once in `main.rs`.
+
+### QUAL-005: `is_some()` followed by `unwrap_or(0)`
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** Replaced by `if let Some(ttl) = ttl`.
+
+### QUAL-006: `#[allow(clippy::collapsible_if)]` hides a lint that could be fixed
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** Nesting removed with `let ... else`; the `allow` attribute is gone.
+
+### QUAL-007: `to_uppercase()` allocates on every command
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** Uses `to_ascii_uppercase()`.
+
+### QUAL-008: `execute` will keep growing as commands are added
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and the new error replies were verified against the running server)
+- **Fix:** `execute` only converts arguments and dispatches; each command has its own function (`ping`, `echo`, `set`, `get`) returning `Result<RespValue, String>`.
+
+### BUG-001: No buffering across socket reads
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and pipelined `PING PING` and a `PING` split across two writes were verified against the running server)
+- **Fix:** `handle_connection` keeps a per-connection `BytesMut` (starts at 1 KB, grows as needed, capped at `parser::MAX_BULK_LEN`). After each read it parses and executes commands in a loop until `Incomplete`, so split and pipelined commands both work.
+
+### BUG-002: `-ERR invalid request` branch is unreachable
+- **Status:** Fixed (2026-10-01, uncommitted working tree; all 7 stages pass with `./test`, and pipelined `PING PING` and a `PING` split across two writes were verified against the running server)
+- **Fix:** `ParserError::Invalid` now sends `-ERR invalid request` and closes the connection, as Redis does on a protocol error.
+
 ### BUG-003: Redundant `end` parameter on `parse`
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
-- **Fix:** `parse(input: &[u8])` takes only a slice; positions are relative to it. (`main.rs` call site still to be updated.)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
+- **Fix:** `parse(input: &[u8])` takes only a slice; positions are relative to it. `main.rs` now calls `parse(&buffer)`.
 
 ### BUG-004: Parser has no bounds checks and panics on short input
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
 - **Fix:** `parse` returns `Result<(RespValue, usize), ParserError>`; missing CRLF or a short bulk body returns `ParserError::Incomplete` instead of panicking.
 
 ### BUG-005: `convert_byte_to_int` doesn't validate digits and overflows
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
 - **Fix:** `convert_byte_to_int` removed; `parse_int` uses `str::parse::<i64>()`. `$-1` → `Null`, `*-1` → `NullArray`, other negatives → `Invalid`, bulk length capped at 512 MB.
 
 ### BUG-006: Array parsing silently drops elements that fail to parse
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
 - **Fix:** Array elements are parsed with `?`, so any element error propagates.
 
 ### BUG-007: Trailing `\r\n` is never verified
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
 - **Fix:** Header lines end at the found CRLF; the bulk string branch verifies the trailing `\r\n` and returns `Invalid` otherwise.
 
 ### BUG-009: Fallback (inline) branch decodes bytes as Latin-1
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
 - **Fix:** Fallback branch removed; an unknown type byte now returns `Invalid("unexpected type byte: ..")`. Inline commands are not supported (the tester doesn't send them).
 
 ### BUG-010: `todo!()` for `:` and `+` lets clients crash the connection
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
 - **Fix:** `:` parses to `RespValue::Integer` and `+` to `RespValue::SimpleString`; no `todo!()` left.
 
 ### QUAL-001: Use `Result` instead of `Option` plus panics in the parser
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
 - **Fix:** Done together with BUG-004 (`ParserError { Incomplete, Invalid(String) }`).
 
 ### QUAL-002: Use slices and std parsing instead of index arithmetic
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
 - **Fix:** Uses `windows(2).position(..)` to find the line end, a `parse_int` helper and `let ... else`.
 
 ### QUAL-003: Rename `RedisRes` and remove the redundant length field
-- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. Project does not build until `main.rs`/`executor.rs` are updated, so stages not re-run yet)
-- **Fix:** Renamed to `RespValue`; length fields removed; `Null`/`NullArray`/`Integer`/`Error` variants added. (`executor.rs` still to be updated.)
+- **Status:** Fixed (2026-09-29, uncommitted working tree; verified by running the parser standalone on edge-case inputs. All 7 stages pass with `./test` as of 2026-10-01)
+- **Fix:** Renamed to `RespValue`; length fields removed; `Null`/`NullArray`/`Integer`/`Error` variants added. `executor.rs` uses `RespValue`.
 
 <!--
 Example of a resolved entry:
