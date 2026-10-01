@@ -1,9 +1,11 @@
+use bytes::Bytes;
+
 #[derive(Debug, PartialEq)]
 pub enum RespValue {
     SimpleString(String),
     Error(String),
     Integer(i64),
-    BulkString(String),
+    BulkString(Bytes),
     Array(Vec<RespValue>),
     Null,
     NullArray,
@@ -15,7 +17,12 @@ impl RespValue {
             RespValue::SimpleString(s) => format!("+{s}\r\n").into_bytes(),
             RespValue::Error(msg) => format!("-{msg}\r\n").into_bytes(),
             RespValue::Integer(n) => format!(":{n}\r\n").into_bytes(),
-            RespValue::BulkString(s) => format!("${}\r\n{s}\r\n", s.len()).into_bytes(),
+            RespValue::BulkString(s) => {
+                let mut out = format!("${}\r\n", s.len()).into_bytes();
+                out.extend_from_slice(s);
+                out.extend_from_slice(b"\r\n");
+                out
+            }
             RespValue::Array(items) => {
                 let mut out = format!("*{}\r\n", items.len()).into_bytes();
                 for item in items {
@@ -96,8 +103,10 @@ pub fn parse(input: &[u8]) -> Result<(RespValue, usize), ParserError> {
                     String::from_utf8_lossy(&input[end..end + 2])
                 )));
             }
-            let st = String::from_utf8_lossy(&input[pos..end]).into_owned();
-            Ok((RespValue::BulkString(st), end + 2))
+            Ok((
+                RespValue::BulkString(Bytes::copy_from_slice(&input[pos..end])),
+                end + 2,
+            ))
         }
         b':' => {
             let val = parse_int(&input[1..line_end])?;
@@ -119,7 +128,7 @@ mod tests {
     use super::*;
 
     fn bulk(s: &str) -> RespValue {
-        RespValue::BulkString(s.to_string())
+        RespValue::BulkString(Bytes::copy_from_slice(s.as_bytes()))
     }
 
     fn is_invalid(result: Result<(RespValue, usize), ParserError>) -> bool {
@@ -327,5 +336,13 @@ mod tests {
             let encoded = value.encode();
             assert_eq!(parse(&encoded), Ok((value, encoded.len())));
         }
+    }
+
+    #[test]
+    fn binary_bulk_string_round_trips() {
+        let value = RespValue::BulkString(Bytes::from_static(b"\xff\xfe"));
+        let encoded = value.encode();
+        assert_eq!(encoded, b"$2\r\n\xff\xfe\r\n");
+        assert_eq!(parse(&encoded), Ok((value, encoded.len())));
     }
 }

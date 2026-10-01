@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
+use bytes::Bytes;
 use tokio::time::Instant;
 
 pub struct RedisData {
-    val: String,
+    val: Bytes,
     expiration: Option<Instant>
 }
 
 impl RedisData {
-    pub fn new(val: String) -> Self {
+    pub fn new(val: Bytes) -> Self {
         Self {
             val,
             expiration: None
@@ -22,7 +23,7 @@ impl RedisData {
 }
 
 pub struct DataManager {
-    data: HashMap<String, RedisData>,
+    data: HashMap<Bytes, RedisData>,
 }
 
 impl DataManager {
@@ -30,11 +31,11 @@ impl DataManager {
         Self { data: HashMap::new() }
     }
 
-    pub fn insert(&mut self, key: String, value: RedisData) {
+    pub fn insert(&mut self, key: Bytes, value: RedisData) {
         self.data.insert(key, value);
     }
 
-    pub fn get(&mut self, key: &str) -> Option<&String> {
+    pub fn get(&mut self, key: &[u8]) -> Option<&Bytes> {
         let is_expired = if let Some(res) = self.data.get(key) {
             if let Some(timeout) = res.expiration {
                 Instant::now() > timeout
@@ -62,8 +63,8 @@ mod tests {
     fn get_returns_inserted_value() {
         let mut db = DataManager::new();
         db.insert("k".into(), RedisData::new("v".into()));
-        assert_eq!(db.get("k"), Some(&"v".to_string()));
-        assert_eq!(db.get("missing"), None);
+        assert_eq!(db.get(b"k"), Some(&Bytes::from("v")));
+        assert_eq!(db.get(b"missing"), None);
     }
 
     #[tokio::test(start_paused = true)]
@@ -74,10 +75,10 @@ mod tests {
             "k".into(),
             RedisData::new("v".into()).with_expiration(expiration),
         );
-        assert!(db.get("k").is_some());
+        assert!(db.get(b"k").is_some());
 
         tokio::time::advance(Duration::from_millis(11)).await;
-        assert_eq!(db.get("k"), None);
-        assert!(!db.data.contains_key("k"));
+        assert_eq!(db.get(b"k"), None);
+        assert!(!db.data.contains_key(b"k".as_slice()));
     }
 }

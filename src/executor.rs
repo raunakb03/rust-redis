@@ -1,6 +1,7 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
+use bytes::Bytes;
 use tokio::time::Instant;
 
 use crate::data_manager::{DataManager, RedisData};
@@ -15,10 +16,10 @@ pub fn execute(req: RespValue, db: &Mutex<DataManager>) -> RespValue {
     let Some(args) = items
         .iter()
         .map(|item| match item {
-            RespValue::BulkString(s) => Some(s.as_str()),
+            RespValue::BulkString(s) => Some(s),
             _ => None,
         })
-        .collect::<Option<Vec<&str>>>()
+        .collect::<Option<Vec<&Bytes>>>()
     else {
         return RespValue::Error("ERR invalid request".into());
     };
@@ -26,12 +27,15 @@ pub fn execute(req: RespValue, db: &Mutex<DataManager>) -> RespValue {
         return RespValue::Error("ERR invalid request".into());
     };
 
-    let result = match name.to_ascii_uppercase().as_str() {
-        "PING" => ping(args),
-        "ECHO" => echo(args),
-        "SET" => set(args, db),
-        "GET" => get(args, db),
-        _ => Err(format!("ERR unknown command '{name}'")),
+    let result = match name.to_ascii_uppercase().as_slice() {
+        b"PING" => ping(args),
+        b"ECHO" => echo(args),
+        b"SET" => set(args, db),
+        b"GET" => get(args, db),
+        _ => Err(format!(
+            "ERR unknown command '{}'",
+            String::from_utf8_lossy(name)
+        )),
     };
     result.unwrap_or_else(RespValue::Error)
 }
@@ -40,22 +44,22 @@ fn wrong_args(command: &str) -> String {
     format!("ERR wrong number of arguments for '{command}' command")
 }
 
-fn ping(args: &[&str]) -> CommandResult {
+fn ping(args: &[&Bytes]) -> CommandResult {
     match args {
         [] => Ok(RespValue::SimpleString("PONG".into())),
-        [message] => Ok(RespValue::BulkString(message.to_string())),
+        [message] => Ok(RespValue::BulkString(Bytes::clone(message))),
         _ => Err(wrong_args("ping")),
     }
 }
 
-fn echo(args: &[&str]) -> CommandResult {
+fn echo(args: &[&Bytes]) -> CommandResult {
     let [message] = args else {
         return Err(wrong_args("echo"));
     };
-    Ok(RespValue::BulkString(message.to_string()))
+    Ok(RespValue::BulkString(Bytes::clone(message)))
 }
 
-fn set(args: &[&str], db: &Mutex<DataManager>) -> CommandResult {
+fn set(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
     let [key, value, options @ ..] = args else {
         return Err(wrong_args("set"));
     };
@@ -63,31 +67,32 @@ fn set(args: &[&str], db: &Mutex<DataManager>) -> CommandResult {
     let mut ttl = None;
     let mut options = options.iter();
     while let Some(option) = options.next() {
-        let to_duration = match option.to_ascii_uppercase().as_str() {
-            "EX" => Duration::from_secs,
-            "PX" => Duration::from_millis,
+        let to_duration = match option.to_ascii_uppercase().as_slice() {
+            b"EX" => Duration::from_secs,
+            b"PX" => Duration::from_millis,
             _ => return Err("ERR syntax error".into()),
         };
         let amount = options
             .next()
+            .and_then(|n| std::str::from_utf8(n).ok())
             .and_then(|n| n.parse::<u64>().ok())
             .filter(|&n| n > 0)
             .ok_or("ERR invalid expire time in 'set' command")?;
         ttl = Some(to_duration(amount));
     }
 
-    let mut data = RedisData::new(value.to_string());
+    let mut data = RedisData::new(Bytes::clone(value));
     if let Some(ttl) = ttl {
         let expiration = Instant::now()
             .checked_add(ttl)
             .ok_or("ERR invalid expire time in 'set' command")?;
         data = data.with_expiration(expiration);
     }
-    db.lock().unwrap().insert(key.to_string(), data);
+    db.lock().unwrap().insert(Bytes::clone(key), data);
     Ok(RespValue::SimpleString("OK".into()))
 }
 
-fn get(args: &[&str], db: &Mutex<DataManager>) -> CommandResult {
+fn get(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
     let [key] = args else {
         return Err(wrong_args("get"));
     };
@@ -104,7 +109,7 @@ mod tests {
     fn run(db: &Mutex<DataManager>, args: &[&str]) -> RespValue {
         let request = RespValue::Array(
             args.iter()
-                .map(|arg| RespValue::BulkString(arg.to_string()))
+                .map(|arg| RespValue::BulkString(Bytes::copy_from_slice(arg.as_bytes())))
                 .collect(),
         );
         execute(request, db)
@@ -119,7 +124,7 @@ mod tests {
     }
 
     fn bulk(s: &str) -> RespValue {
-        RespValue::BulkString(s.into())
+        RespValue::BulkString(Bytes::copy_from_slice(s.as_bytes()))
     }
 
     fn error(msg: &str) -> RespValue {
@@ -152,10 +157,7 @@ mod tests {
 
     #[test]
     fn unknown_command() {
-        assert_eq!(
-            run(&new_db(), &["FOO"]),
-            error("ERR unknown command 'FOO'")
-        );
+        assert_eq!(run(&new_db(), &["FOO"]), error("ERR unknown command 'FOO'"));
     }
 
     #[test]
@@ -295,5 +297,43 @@ mod tests {
         run(&db, &["SET", "k", "v", "EX", "100", "PX", "50"]);
         tokio::time::advance(Duration::from_millis(51)).await;
         assert_eq!(run(&db, &["GET", "k"]), RespValue::Null);
+    }
+
+    // --- binary safety ---
+
+    fn run_bytes(db: &Mutex<DataManager>, args: &[&'static [u8]]) -> RespValue {
+        let request = RespValue::Array(
+            args.iter()
+                .map(|&arg| RespValue::BulkString(Bytes::from_static(arg)))
+                .collect(),
+        );
+        execute(request, db)
+    }
+
+    #[test]
+    fn echo_is_binary_safe() {
+        assert_eq!(
+            run_bytes(&new_db(), &[b"ECHO", b"\xff\x00\xfe"]),
+            RespValue::BulkString(Bytes::from_static(b"\xff\x00\xfe"))
+        );
+    }
+
+    #[test]
+    fn binary_keys_and_values_round_trip() {
+        let db = new_db();
+        assert_eq!(run_bytes(&db, &[b"SET", b"\xff", b"a\x00b"]), ok());
+        assert_eq!(run_bytes(&db, &[b"SET", b"\xfe", b"other"]), ok());
+        assert_eq!(
+            run_bytes(&db, &[b"GET", b"\xff"]),
+            RespValue::BulkString(Bytes::from_static(b"a\x00b"))
+        );
+    }
+
+    #[test]
+    fn non_utf8_expire_time_is_rejected() {
+        assert_eq!(
+            run_bytes(&new_db(), &[b"SET", b"k", b"v", b"PX", b"\xff"]),
+            error("ERR invalid expire time in 'set' command")
+        );
     }
 }

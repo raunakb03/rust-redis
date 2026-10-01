@@ -4,7 +4,7 @@ This file tracks known bugs, correctness gaps, and code-quality improvements for
 Redis implementation (CodeCrafters "Build your own Redis" in Rust). It is the shared
 channel between the project owner and any AI assistant reviewing the code.
 
-**Last reviewed:** 2026-10-01 (commit `78b4ffa` + uncommitted parser, `main.rs` and `executor.rs` changes; all stages up to *Expiry* pass with `./test`)
+**Last reviewed:** 2026-10-02 (uncommitted switch to `Bytes` on top of `369dda1`; `cargo test` and all stages up to *Expiry* pass)
 
 ---
 
@@ -40,21 +40,11 @@ function per command that returns a `RespValue` (see **Resolved**). The project 
 The remaining items are mostly for later extensions or code quality; none are tested by the
 current stages.
 
-Next: commit → BUG-008 (bytes) → the rest. Run `cargo test` and `./test` after every change.
+Next: commit → Lists extension (starting with QUAL-010). Run `cargo test` and `./test` after every change.
 
 ---
 
 ## Bugs (confirmed or high-confidence)
-
-### BUG-008: `from_utf8_lossy` corrupts binary data
-- **Status:** Open
-- **Severity:** High
-- **Location:** `src/parser.rs` — `b'$'` branch; values stored as `String` in `src/data_manager.rs`
-- **Problem:** Redis strings can hold any bytes. Invalid UTF-8 bytes become U+FFFD (3 bytes each),
-  so stored and echoed values are corrupted. (The reply *framing* is now correct:
-  `RespValue::encode` uses the length of the string actually sent.)
-- **Repro:** ECHO `\xff\xfe` (2 bytes) replies with the 6-byte `\xef\xbf\xbd\xef\xbf\xbd`.
-- **Suggested fix:** Store bulk strings and values as `Vec<u8>` / `Bytes`, not `String`.
 
 ### BUG-014: Expired keys are only removed when someone reads them
 - **Status:** Open
@@ -109,11 +99,11 @@ Next: commit → BUG-008 (bytes) → the rest. Run `cargo test` and `./test` aft
 - **Note:** `self.data.get(key).and_then(|d| d.expiration).is_some_and(|t| Instant::now() >= t)`.
   The look up → remove → look up again pattern is a valid way around a borrow-checker limitation.
 
-### QUAL-010: Values are plain `String`
+### QUAL-010: Stored values can only be strings
 - **Status:** Open
 - **Location:** `src/data_manager.rs` — `RedisData`
-- **Note:** Later stages (lists, streams) will need an enum of value types. Also see BUG-008 (bytes).
-
+- **Note:** Values are now `Bytes` (BUG-008 fixed), but later stages (lists, streams) need an enum
+  of value types, e.g. `enum Value { String(Bytes), List(VecDeque<Bytes>) }`.
 ### QUAL-011: Unused dependencies
 - **Status:** Open
 - **Location:** `Cargo.toml`
@@ -133,6 +123,10 @@ Next: commit → BUG-008 (bytes) → the rest. Run `cargo test` and `./test` aft
 ---
 
 ## Resolved
+
+### BUG-008: `from_utf8_lossy` corrupts binary data
+- **Status:** Fixed (2026-10-02, uncommitted working tree; 44 unit tests and all 7 stages pass, and `ECHO`/`SET`/`GET` with `\xff\xfe` and `a\x00b` were verified against the running server)
+- **Fix:** `RespValue::BulkString` holds `Bytes` (copied raw with `Bytes::copy_from_slice`); `encode` appends the raw bytes with `extend_from_slice`; the store is `HashMap<Bytes, RedisData>` with `Bytes` values; the executor matches command names and options with `b"..."` patterns. `SimpleString`/`Error` stay `String` since they are always text.
 
 ### QUAL-012: No unit tests
 - **Status:** Fixed (2026-10-01, uncommitted working tree; `cargo test` runs 40 tests, all passing)

@@ -25,9 +25,9 @@ commands sent in one write (pipelining) are both handled. Wrong argument counts 
 ## Known issues
 
 Known bugs and planned improvements are tracked in [`ISSUES.md`](ISSUES.md), each with a
-severity, location and suggested fix. The most important current limitation is that values are
-stored as UTF-8 `String`s, so binary data is corrupted (BUG-008). Expired keys are also only
-removed when they are read.
+severity, location and suggested fix. Keys and values are binary-safe. The main current
+limitations are that values can only be strings (no lists or streams yet), and expired keys are
+only removed when they are read.
 
 ## Project layout
 
