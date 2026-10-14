@@ -4,7 +4,7 @@ This file tracks known bugs, correctness gaps, and code-quality improvements for
 Redis implementation (CodeCrafters "Build your own Redis" in Rust). It is the shared
 channel between the project owner and any AI assistant reviewing the code.
 
-**Last reviewed:** 2026-10-02 (uncommitted switch to `Bytes` on top of `369dda1`; `cargo test` and all stages up to *Expiry* pass)
+**Last reviewed:** 2026-10-14 (uncommitted `RPUSH` work on top of `08d7519`; clippy clean, 50 unit tests and all 8 stages pass; `cargo fmt --check` still fails)
 
 ---
 
@@ -89,15 +89,40 @@ Next: commit → Lists extension (starting with QUAL-010). Run `cargo test` and 
 - **Suggested fix:** Only worth doing if it shows up in practice, e.g. check a bulk string's
   declared length against the buffered bytes before re-parsing.
 
+### BUG-020: `SET` accepts conflicting or repeated expiry options
+- **Status:** Open
+- **Severity:** Low
+- **Location:** `src/executor.rs` — `set`, options loop
+- **Problem:** `SET k v EX 10 PX 100` (or `EX 1 EX 2`) silently uses the last option. Redis replies
+  `ERR syntax error` when more than one expiry option is given.
+- **Repro:** Read from the code, not run against the server.
+- **Suggested fix:** If `ttl` is already `Some` when an `EX`/`PX` is seen, return `ERR syntax error`.
+
+### BUG-021: Connection buffer limit is both too strict and too loose
+- **Status:** Open
+- **Severity:** Low
+- **Location:** `src/main.rs` — `handle_connection`, `buffer.len() > parser::MAX_BULK_LEN`
+- **Problem:** The limit applies to the whole buffer, so a legal 512 MB value plus its RESP header
+  and the rest of the command is rejected. At the same time, a client that sends bytes with no
+  `\r\n` makes the server buffer up to 512 MB per connection before giving up.
+- **Repro:** Read from the code, not run against the server.
+- **Suggested fix:** Limit the header line length separately (e.g. reject if no CRLF in the first
+  64 KB), and allow the buffer to exceed `MAX_BULK_LEN` by a small header margin.
+
+### BUG-022: `GET` on a list key panics and poisons the store's mutex
+- **Status:** Open
+- **Severity:** High
+- **Location:** `src/executor.rs` — `get`, `RedisDataType::List(_) => todo!()`
+- **Problem:** The `todo!()` runs while the `MutexGuard` from `db.lock()` is still alive, so the
+  panic poisons the mutex and every later `lock().unwrap()` panics too: one `GET` breaks the
+  whole server.
+- **Repro:** Verified 2026-10-14: `RPUSH k a`, then `GET k` → connection closed; after that every
+  `SET`/`GET`/`RPUSH` from any client panics with `PoisonError` (`PING` still works, it doesn't lock).
+- **Suggested fix:** Return Redis's `WRONGTYPE Operation against a key holding the wrong kind of value` error instead.
+
 ---
 
 ## Code quality / idiomatic Rust
-
-### QUAL-009: Simplify the expiry check in `DataManager::get`
-- **Status:** Open
-- **Location:** `src/data_manager.rs` — `get`
-- **Note:** `self.data.get(key).and_then(|d| d.expiration).is_some_and(|t| Instant::now() >= t)`.
-  The look up → remove → look up again pattern is a valid way around a borrow-checker limitation.
 
 ### QUAL-010: Stored values can only be strings
 - **Status:** Open
@@ -107,9 +132,22 @@ Next: commit → Lists extension (starting with QUAL-010). Run `cargo test` and 
 ### QUAL-011: Unused dependencies
 - **Status:** Open
 - **Location:** `Cargo.toml`
-- **Note:** `anyhow`, `thiserror` and `bytes` aren't used yet. Use them (see BUG-001, BUG-004) or
-  remove them.
+- **Note:** `anyhow` and `thiserror` aren't used (`bytes` now is). Use them or remove them.
+  `thiserror` would fit `ParserError` (it could then implement `std::error::Error`).
 
+### QUAL-013: One `write_all` per pipelined reply
+- **Status:** Open
+- **Location:** `src/main.rs` — inner `while` loop
+- **Note:** Each reply is written separately, so a pipeline of 100 commands makes 100 writes.
+  Collect the encoded replies into one buffer and write once after the loop. Performance only.
+
+### QUAL-015: Unclear names in the data model
+- **Status:** Open
+- **Location:** `src/data_manager.rs` — `RedisDataType`, `RedisData`, `insert_into_list`
+- **Note:** `Byte` holds a whole string value (Redis calls it "string"); `insert_into_list` doesn't
+  say which end, which matters once `LPUSH` exists; `RedisData` vs `RedisDataType` doesn't say which
+  is the entry and which is the value (e.g. `Entry` / `Value`). Strings use `RedisData::new`, lists
+  a struct literal; one constructor per kind would be consistent. Owner deferred this (2026-10-14).
 ---
 
 ## What's already good (keep doing this)
@@ -124,8 +162,20 @@ Next: commit → Lists extension (starting with QUAL-010). Run `cargo test` and 
 
 ## Resolved
 
+### QUAL-014: `RPUSH` has no unit tests
+- **Status:** Fixed (2026-10-14, uncommitted working tree; `cargo test` runs 50 tests, all passing)
+- **Fix:** Executor tests for new key/append, `WRONGTYPE` on a string key, wrong argument counts and an expired string key (paused clock); `data_manager` tests for element order and `DataError::WrongType`. `DataError` now derives `Debug, PartialEq`.
+
+### QUAL-009: Simplify the expiry check
+- **Status:** Fixed (2026-10-14, uncommitted working tree; 44 unit tests and all 8 stages pass)
+- **Fix:** Expiry check moved into `DataManager::remove_if_expired`, used by `get` and `insert_into_list`, written as `get(key).and_then(|res| res.expiration).is_some_and(|t| Instant::now() > t)`. Keeps `>` (Redis also treats a key as expired only strictly after its expiry time).
+
+### BUG-023: `RPUSH` on a string key returns a non-Redis error
+- **Status:** Fixed (2026-10-14, uncommitted working tree; verified against the running server: `SET s x`, `RPUSH s y` → `WRONGTYPE Operation against a key holding the wrong kind of value`)
+- **Fix:** `insert_into_list` returns `Result<usize, DataError>`; the executor's `data_error` turns `DataError::WrongType` into the Redis message via `map_err`.
+
 ### BUG-008: `from_utf8_lossy` corrupts binary data
-- **Status:** Fixed (2026-10-02, uncommitted working tree; 44 unit tests and all 7 stages pass, and `ECHO`/`SET`/`GET` with `\xff\xfe` and `a\x00b` were verified against the running server)
+- **Status:** Fixed (2026-10-02, commit `08d7519`; 44 unit tests and all 7 stages pass, and `ECHO`/`SET`/`GET` with `\xff\xfe` and `a\x00b` were verified against the running server)
 - **Fix:** `RespValue::BulkString` holds `Bytes` (copied raw with `Bytes::copy_from_slice`); `encode` appends the raw bytes with `extend_from_slice`; the store is `HashMap<Bytes, RedisData>` with `Bytes` values; the executor matches command names and options with `b"..."` patterns. `SimpleString`/`Error` stay `String` since they are always text.
 
 ### QUAL-012: No unit tests

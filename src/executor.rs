@@ -4,7 +4,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use tokio::time::Instant;
 
-use crate::data_manager::{DataManager, RedisData};
+use crate::data_manager::{DataError, DataManager, RedisData, RedisDataType};
 use crate::parser::RespValue;
 
 type CommandResult = Result<RespValue, String>;
@@ -32,6 +32,7 @@ pub fn execute(req: RespValue, db: &Mutex<DataManager>) -> RespValue {
         b"ECHO" => echo(args),
         b"SET" => set(args, db),
         b"GET" => get(args, db),
+        b"RPUSH" => rpush(args, db),
         _ => Err(format!(
             "ERR unknown command '{}'",
             String::from_utf8_lossy(name)
@@ -42,6 +43,14 @@ pub fn execute(req: RespValue, db: &Mutex<DataManager>) -> RespValue {
 
 fn wrong_args(command: &str) -> String {
     format!("ERR wrong number of arguments for '{command}' command")
+}
+
+fn data_error(err: DataError) -> String {
+    match err {
+        DataError::WrongType => {
+            "WRONGTYPE Operation against a key holding the wrong kind of value".into()
+        }
+    }
 }
 
 fn ping(args: &[&Bytes]) -> CommandResult {
@@ -97,9 +106,20 @@ fn get(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
         return Err(wrong_args("get"));
     };
     Ok(match db.lock().unwrap().get(key) {
-        Some(value) => RespValue::BulkString(value.clone()),
+        Some(RedisDataType::Byte(bytes)) => RespValue::BulkString(bytes.clone()),
+        Some(RedisDataType::List(_)) => todo!(),
         None => RespValue::Null,
     })
+}
+
+fn rpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
+    let [key, value] = args else {
+        return Err(wrong_args("rpush"));
+    };
+    db.lock().unwrap()
+        .insert_into_list(Bytes::clone(key), Bytes::clone(value))
+        .map(|num_items| RespValue::Integer(num_items as i64))
+        .map_err(data_error)
 }
 
 #[cfg(test)]
@@ -260,6 +280,35 @@ mod tests {
         assert_eq!(run(&db, &["GET", "k"]), RespValue::Null);
     }
 
+    // --- RPUSH ---
+
+    #[test]
+    fn rpush_creates_list_and_appends() {
+        let db = new_db();
+        assert_eq!(run(&db, &["RPUSH", "k", "a"]), RespValue::Integer(1));
+        assert_eq!(run(&db, &["rpush", "k", "b"]), RespValue::Integer(2));
+        assert_eq!(run(&db, &["RPUSH", "other", "a"]), RespValue::Integer(1));
+    }
+
+    #[test]
+    fn rpush_on_string_key_is_wrongtype() {
+        let db = new_db();
+        run(&db, &["SET", "k", "v"]);
+        assert_eq!(
+            run(&db, &["RPUSH", "k", "a"]),
+            error("WRONGTYPE Operation against a key holding the wrong kind of value")
+        );
+        assert_eq!(run(&db, &["GET", "k"]), bulk("v"));
+    }
+
+    #[test]
+    fn rpush_wrong_argument_count() {
+        let db = new_db();
+        let wrong_args = error("ERR wrong number of arguments for 'rpush' command");
+        assert_eq!(run(&db, &["RPUSH"]), wrong_args);
+        assert_eq!(run(&db, &["RPUSH", "k"]), wrong_args);
+    }
+
     // --- expiry (paused clock: time only moves on `advance`) ---
 
     #[tokio::test(start_paused = true)]
@@ -297,6 +346,14 @@ mod tests {
         run(&db, &["SET", "k", "v", "EX", "100", "PX", "50"]);
         tokio::time::advance(Duration::from_millis(51)).await;
         assert_eq!(run(&db, &["GET", "k"]), RespValue::Null);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rpush_replaces_expired_string() {
+        let db = new_db();
+        run(&db, &["SET", "k", "v", "PX", "100"]);
+        tokio::time::advance(Duration::from_millis(101)).await;
+        assert_eq!(run(&db, &["RPUSH", "k", "a"]), RespValue::Integer(1));
     }
 
     // --- binary safety ---
