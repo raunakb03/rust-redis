@@ -113,13 +113,21 @@ fn get(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
 }
 
 fn rpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
-    let [key, value] = args else {
+    let [key, args @ ..] = args else {
         return Err(wrong_args("rpush"));
     };
-    db.lock().unwrap()
-        .insert_into_list(Bytes::clone(key), Bytes::clone(value))
-        .map(|num_items| RespValue::Integer(num_items as i64))
-        .map_err(data_error)
+    if args.is_empty() {
+        return Err(wrong_args("rpush"));
+    }
+
+    let mut db = db.lock().unwrap();
+    let mut len = 0;
+    for arg in args {
+        len = db
+            .insert_into_list(Bytes::clone(key), Bytes::clone(arg))
+            .map_err(data_error)?;
+    }
+    Ok(RespValue::Integer(len as i64))
 }
 
 #[cfg(test)]
