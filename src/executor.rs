@@ -33,6 +33,7 @@ pub fn execute(req: RespValue, db: &Mutex<DataManager>) -> RespValue {
         b"SET" => set(args, db),
         b"GET" => get(args, db),
         b"RPUSH" => rpush(args, db),
+        b"LRANGE" => lrange(args, db),
         _ => Err(format!(
             "ERR unknown command '{}'",
             String::from_utf8_lossy(name)
@@ -128,4 +129,31 @@ fn rpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
             .map_err(data_error)?;
     }
     Ok(RespValue::Integer(len as i64))
+}
+
+fn lrange(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
+    let [key, args @..] = args else {
+        return Err(wrong_args("lrange"));
+    };
+    if args.len() != 2 {
+        return Err(wrong_args("lrange"));
+    }
+
+    let mut db = db.lock().unwrap();
+
+    // TODO: do the index validation
+
+    let l = str::from_utf8(args[0])
+        .map_err(|_| wrong_args("lrange"))?
+        .parse::<usize>()
+        .unwrap();
+    let r = str::from_utf8(args[1])
+        .map_err(|_| wrong_args("lrange"))?
+        .parse::<usize>()
+        .unwrap();
+
+    let res =  db.get_from_list(key, l, r);
+    Ok(RespValue::Array(res.iter()
+        .map(|ele| RespValue::BulkString(ele.clone()))
+        .collect::<Vec<RespValue>>()))
 }

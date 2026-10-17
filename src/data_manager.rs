@@ -74,6 +74,19 @@ impl DataManager {
         }
     }
 
+    pub fn get_from_list(&mut self, key: &[u8] ,start: usize, end: usize) -> Vec<Bytes> {
+        let Some(RedisDataType::List(list)) = self.get(key) else {
+            return Vec::new();
+        };
+
+        let end = end.min(list.len()-1);
+        if start > end || list.len() <= end {
+            return Vec::new();
+        }
+
+        list[start..=end].to_vec()
+    }
+
     pub fn get(&mut self, key: &[u8]) -> Option<&RedisDataType> {
         self.remove_if_expired(key);
         self.data.get(key).map(|res| &res.val)
