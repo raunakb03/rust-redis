@@ -141,15 +141,13 @@ fn lrange(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
 
     let mut db = db.lock().unwrap();
 
-    // TODO: do the index validation
-
     let l = str::from_utf8(args[0])
         .map_err(|_| wrong_args("lrange"))?
-        .parse::<usize>()
+        .parse::<i64>()
         .unwrap();
     let r = str::from_utf8(args[1])
         .map_err(|_| wrong_args("lrange"))?
-        .parse::<usize>()
+        .parse::<i64>()
         .unwrap();
 
     let res =  db.get_from_list(key, l, r);

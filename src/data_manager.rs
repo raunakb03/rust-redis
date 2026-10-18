@@ -19,6 +19,13 @@ pub enum DataError {
     WrongType,
 }
 
+fn handle_negative_index(idx: i64, len: usize) -> usize {
+    if !idx.is_negative() {
+        return idx as usize;
+    }
+    (len as i64 + idx).max(0) as usize
+}
+
 impl RedisData {
     pub fn new(val: Bytes) -> Self {
         Self {
@@ -74,13 +81,26 @@ impl DataManager {
         }
     }
 
-    pub fn get_from_list(&mut self, key: &[u8] ,start: usize, end: usize) -> Vec<Bytes> {
+
+    pub fn get_from_list(&mut self, key: &[u8] ,start: i64, end: i64) -> Vec<Bytes> {
         let Some(RedisDataType::List(list)) = self.get(key) else {
             return Vec::new();
         };
 
+        let start = if start.is_negative() {
+            handle_negative_index(start, list.len())
+        } else {
+            start as usize
+        };
+
+        let end = if end.is_negative() {
+            handle_negative_index(end, list.len())
+        } else {
+            end as usize
+        };
+
         let end = end.min(list.len()-1);
-        if start > end || list.len() <= end {
+        if start > end {
             return Vec::new();
         }
 
