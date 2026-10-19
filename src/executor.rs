@@ -35,6 +35,7 @@ pub fn execute(req: RespValue, db: &Mutex<DataManager>) -> RespValue {
         b"RPUSH" => rpush(args, db),
         b"LRANGE" => lrange(args, db),
         b"LPUSH" => lpush(args, db),
+        b"LLEN" => llen(args, db),
         _ => Err(format!(
             "ERR unknown command '{}'",
             String::from_utf8_lossy(name)
@@ -171,5 +172,18 @@ fn lpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
     Ok(RespValue::Integer(
         db
             .insert_into_list_front(Bytes::clone(key), args)
+            .map_err(data_error)? as i64))
+}
+
+
+fn llen(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
+    let Some(key) = args.first() else {
+        return Err(wrong_args("lpush"));
+    };
+
+    let mut db = db.lock().unwrap();
+    Ok(RespValue::Integer(
+        db
+            .get_list_len(key)
             .map_err(data_error)? as i64))
 }

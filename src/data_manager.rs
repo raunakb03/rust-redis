@@ -129,4 +129,12 @@ impl DataManager {
         self.remove_if_expired(key);
         self.data.get(key).map(|res| &res.val)
     }
+
+    pub fn get_list_len(&mut self, key: &[u8]) -> Result<usize, DataError> {
+        match self.get(key) {
+            None => Ok(0),
+            Some(RedisDataType::List(list)) => Ok(list.len()),
+            Some(RedisDataType::Byte(_)) => Err(DataError::WrongType),
+        }
+    }
 }
