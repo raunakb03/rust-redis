@@ -34,6 +34,7 @@ pub fn execute(req: RespValue, db: &Mutex<DataManager>) -> RespValue {
         b"GET" => get(args, db),
         b"RPUSH" => rpush(args, db),
         b"LRANGE" => lrange(args, db),
+        b"LPUSH" => lpush(args, db),
         _ => Err(format!(
             "ERR unknown command '{}'",
             String::from_utf8_lossy(name)
@@ -122,13 +123,11 @@ fn rpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
     }
 
     let mut db = db.lock().unwrap();
-    let mut len = 0;
-    for arg in args {
-        len = db
-            .insert_into_list(Bytes::clone(key), Bytes::clone(arg))
-            .map_err(data_error)?;
-    }
-    Ok(RespValue::Integer(len as i64))
+
+    Ok(RespValue::Integer(
+        db
+            .insert_into_list(Bytes::clone(key), args)
+            .map_err(data_error)? as i64))
 }
 
 fn lrange(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
@@ -154,4 +153,21 @@ fn lrange(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
     Ok(RespValue::Array(res.iter()
         .map(|ele| RespValue::BulkString(ele.clone()))
         .collect::<Vec<RespValue>>()))
+}
+
+fn lpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
+    let [key, args @..] = args else {
+        return Err(wrong_args("lrange"));
+    };
+
+    if args.is_empty() {
+        return Err(wrong_args("lpush"));
+    }
+
+    let mut db = db.lock().unwrap();
+
+    Ok(RespValue::Integer(
+        db
+            .insert_into_llist(Bytes::clone(key), args)
+            .map_err(data_error)? as i64))
 }

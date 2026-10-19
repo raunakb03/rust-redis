@@ -66,7 +66,7 @@ impl DataManager {
         }
     }
 
-    pub fn insert_into_list(&mut self, key: Bytes, value: Bytes) -> Result<usize, DataError> {
+    pub fn insert_into_list(&mut self, key: Bytes, args: &[&Bytes]) -> Result<usize, DataError> {
         self.remove_if_expired(&key);
         let data = self.data.entry(key).or_insert_with(|| RedisData {
             val: RedisDataType::List(Vec::new()),
@@ -75,12 +75,31 @@ impl DataManager {
         match &mut data.val {
             RedisDataType::Byte(_) => Err(DataError::WrongType),
             RedisDataType::List(items) => {
-                items.push(value);
+                for value in args {
+                    items.push(Bytes::clone(value));
+                }
                 Ok(items.len())
             },
         }
     }
 
+    pub fn insert_into_llist(&mut self, key: Bytes, args: &[&Bytes]) -> Result<usize, DataError> {
+        self.remove_if_expired(&key);
+        let data = self.data.entry(key).or_insert_with(|| RedisData {
+            val: RedisDataType::List(Vec::new()),
+            expiration: None,
+        });
+
+        match &mut data.val {
+            RedisDataType::Byte(_) => Err(DataError::WrongType),
+            RedisDataType::List(items) => {
+                for value in args {
+                    items.insert(0, Bytes::clone(value));
+                }
+                Ok(items.len())
+            },
+        }
+    }
 
     pub fn get_from_list(&mut self, key: &[u8] ,start: i64, end: i64) -> Vec<Bytes> {
         let Some(RedisDataType::List(list)) = self.get(key) else {
