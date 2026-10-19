@@ -109,6 +109,7 @@ fn get(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
     };
     Ok(match db.lock().unwrap().get(key) {
         Some(RedisDataType::Byte(bytes)) => RespValue::BulkString(bytes.clone()),
+        // TODO: handle this case
         Some(RedisDataType::List(_)) => todo!(),
         None => RespValue::Null,
     })
@@ -126,8 +127,15 @@ fn rpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
 
     Ok(RespValue::Integer(
         db
-            .insert_into_list(Bytes::clone(key), args)
+            .insert_into_list_back(Bytes::clone(key), args)
             .map_err(data_error)? as i64))
+}
+
+fn get_i64_from_args(arg: &Bytes) -> Result<i64, String> {
+    str::from_utf8(arg)
+        .map_err(|_| wrong_args("lrange"))?
+        .parse::<i64>()
+        .map_err(|_| wrong_args("lrange"))
 }
 
 fn lrange(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
@@ -138,16 +146,10 @@ fn lrange(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
         return Err(wrong_args("lrange"));
     }
 
-    let mut db = db.lock().unwrap();
+    let l = get_i64_from_args(args[0])?;
+    let r = get_i64_from_args(args[1])?;
 
-    let l = str::from_utf8(args[0])
-        .map_err(|_| wrong_args("lrange"))?
-        .parse::<i64>()
-        .unwrap();
-    let r = str::from_utf8(args[1])
-        .map_err(|_| wrong_args("lrange"))?
-        .parse::<i64>()
-        .unwrap();
+    let mut db = db.lock().unwrap();
 
     let res =  db.get_from_list(key, l, r);
     Ok(RespValue::Array(res.iter()
@@ -157,7 +159,7 @@ fn lrange(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
 
 fn lpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
     let [key, args @..] = args else {
-        return Err(wrong_args("lrange"));
+        return Err(wrong_args("lpush"));
     };
 
     if args.is_empty() {
@@ -168,6 +170,6 @@ fn lpush(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
 
     Ok(RespValue::Integer(
         db
-            .insert_into_llist(Bytes::clone(key), args)
+            .insert_into_list_front(Bytes::clone(key), args)
             .map_err(data_error)? as i64))
 }

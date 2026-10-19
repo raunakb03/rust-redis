@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use bytes::Bytes;
 use tokio::time::Instant;
@@ -6,12 +6,17 @@ use tokio::time::Instant;
 #[derive(Debug, PartialEq)]
 pub enum RedisDataType {
     Byte(Bytes),
-    List(Vec<Bytes>),
+    List(VecDeque<Bytes>),
 }
 
 pub struct RedisData {
     val: RedisDataType,
     expiration: Option<Instant>,
+}
+
+enum ListDirection {
+    Front,
+    Back,
 }
 
 #[derive(Debug, PartialEq)]
@@ -66,39 +71,33 @@ impl DataManager {
         }
     }
 
-    pub fn insert_into_list(&mut self, key: Bytes, args: &[&Bytes]) -> Result<usize, DataError> {
+    fn insert_into_list(&mut self, key: Bytes, args: &[&Bytes], dir: ListDirection) -> Result<usize, DataError>{
         self.remove_if_expired(&key);
         let data = self.data.entry(key).or_insert_with(|| RedisData {
-            val: RedisDataType::List(Vec::new()),
+            val: RedisDataType::List(VecDeque::new()),
             expiration: None,
         });
         match &mut data.val {
             RedisDataType::Byte(_) => Err(DataError::WrongType),
             RedisDataType::List(items) => {
                 for value in args {
-                    items.push(Bytes::clone(value));
+                    match dir {
+                        ListDirection::Front => items.push_front(Bytes::clone(value)),
+                        ListDirection::Back => items.push_back(Bytes::clone(value)),
+                    }
+                    
                 }
                 Ok(items.len())
             },
         }
     }
 
-    pub fn insert_into_llist(&mut self, key: Bytes, args: &[&Bytes]) -> Result<usize, DataError> {
-        self.remove_if_expired(&key);
-        let data = self.data.entry(key).or_insert_with(|| RedisData {
-            val: RedisDataType::List(Vec::new()),
-            expiration: None,
-        });
+    pub fn insert_into_list_back(&mut self, key: Bytes, args: &[&Bytes]) -> Result<usize, DataError> {
+        self.insert_into_list(key, args, ListDirection::Back)
+    }
 
-        match &mut data.val {
-            RedisDataType::Byte(_) => Err(DataError::WrongType),
-            RedisDataType::List(items) => {
-                for value in args {
-                    items.insert(0, Bytes::clone(value));
-                }
-                Ok(items.len())
-            },
-        }
+    pub fn insert_into_list_front(&mut self, key: Bytes, args: &[&Bytes]) -> Result<usize, DataError> {
+        self.insert_into_list(key, args, ListDirection::Front)
     }
 
     pub fn get_from_list(&mut self, key: &[u8] ,start: i64, end: i64) -> Vec<Bytes> {
@@ -123,7 +122,7 @@ impl DataManager {
             return Vec::new();
         }
 
-        list[start..=end].to_vec()
+        list.range(start..=end).cloned().collect::<Vec<Bytes>>()
     }
 
     pub fn get(&mut self, key: &[u8]) -> Option<&RedisDataType> {
