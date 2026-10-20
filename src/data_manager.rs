@@ -130,7 +130,13 @@ impl DataManager {
             return None;
         };
 
-        list.pop_front()
+        let res = list.pop_front();
+
+        if list.is_empty() {
+            self.data.remove(key);
+        }
+
+        res
     }
 
     pub fn get(&mut self, key: &[u8]) -> Option<&RedisDataType> {
