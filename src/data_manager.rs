@@ -125,9 +125,22 @@ impl DataManager {
         list.range(start..=end).cloned().collect::<Vec<Bytes>>()
     }
 
+    pub fn pop_from_list(&mut self, key: &[u8]) -> Option<Bytes> {
+        let Some(RedisDataType::List(list)) = self.get_mut(key) else {
+            return None;
+        };
+
+        list.pop_front()
+    }
+
     pub fn get(&mut self, key: &[u8]) -> Option<&RedisDataType> {
         self.remove_if_expired(key);
         self.data.get(key).map(|res| &res.val)
+    }
+
+    fn get_mut(&mut self, key: &[u8]) -> Option<&mut RedisDataType> {
+        self.remove_if_expired(key);
+        self.data.get_mut(key).map(|res| &mut res.val)
     }
 
     pub fn get_list_len(&mut self, key: &[u8]) -> Result<usize, DataError> {
