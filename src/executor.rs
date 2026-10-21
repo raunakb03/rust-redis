@@ -194,9 +194,21 @@ fn lpop(args: &[&Bytes], db: &Mutex<DataManager>) -> CommandResult {
         return Err(wrong_args("lpush"));
     };
 
+    let num_remove = if args.len() > 1 {
+        get_i64_from_args(args[1])?.max(0) as usize
+    } else {
+        1
+    };
+
     let mut db = db.lock().unwrap();
-    Ok(match db.pop_from_list(key) {
-        Some(res) => RespValue::BulkString(res),
+    Ok(match db.pop_from_list(key, num_remove) {
+        Some(res) => {
+            if args.len() == 1 {
+                RespValue::BulkString(Bytes::clone(&res[0]))
+            } else {
+                RespValue::Array(res.iter().map(|val| RespValue::BulkString(Bytes::clone(val))).collect())
+            }
+        }
         None => RespValue::Null,
     })
 }

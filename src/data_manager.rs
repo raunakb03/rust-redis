@@ -125,18 +125,24 @@ impl DataManager {
         list.range(start..=end).cloned().collect::<Vec<Bytes>>()
     }
 
-    pub fn pop_from_list(&mut self, key: &[u8]) -> Option<Bytes> {
+    pub fn pop_from_list(&mut self, key: &[u8], num_eles: usize) -> Option<Vec<Bytes>> {
         let Some(RedisDataType::List(list)) = self.get_mut(key) else {
             return None;
         };
 
-        let res = list.pop_front();
+        let mut res = Vec::new();
+
+        let num_eles = num_eles.min(list.len());
+
+        for _ in 0..num_eles {
+            res.push(list.pop_front().unwrap());
+        }
 
         if list.is_empty() {
             self.data.remove(key);
         }
 
-        res
+        Some(res)
     }
 
     pub fn get(&mut self, key: &[u8]) -> Option<&RedisDataType> {
